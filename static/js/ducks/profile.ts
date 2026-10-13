@@ -28,6 +28,7 @@ export interface Profile {
   created_at?: string;
   expiration_date?: string | null;
   streams?: any[];
+  groups?: { id: number; name: string }[];
   permissions: string[];
   acls: string[];
   roles: any[];
@@ -36,6 +37,26 @@ export interface Profile {
   groupAdmissionRequests?: any[];
   is_anonymous?: boolean;
   [key: string]: any;
+}
+
+export interface TokenScopeRef {
+  id: number;
+  name: string;
+}
+
+export interface TokenEntry {
+  fingerprint: string;
+  name: string;
+  acls: string[];
+  groups: TokenScopeRef[];
+  streams: TokenScopeRef[];
+  series_id?: string | null;
+  generation: number;
+  created_at?: string;
+  expires_at?: string | null;
+  retire_at?: string | null;
+  revoked_at?: string | null;
+  status: string;
 }
 
 // Deep-merge `source` into `target` (an Immer draft), matching the backend's
@@ -127,6 +148,80 @@ export const profileApi = skyportalApi.injectEndpoints({
       }),
       invalidatesTags: ["Profile"],
     }),
+    revokeGeneration: build.mutation<
+      unknown,
+      { seriesID: string; generation: number }
+    >({
+      query: ({ seriesID, generation }) => ({
+        url: `api/internal/token-series/${seriesID}/generations/${generation}`,
+        method: "POST",
+      }),
+      invalidatesTags: ["Profile"],
+    }),
+    deleteGeneration: build.mutation<
+      unknown,
+      { seriesID: string; generation: number }
+    >({
+      query: ({ seriesID, generation }) => ({
+        url: `api/internal/token-series/${seriesID}/generations/${generation}`,
+        method: "DELETE",
+      }),
+      invalidatesTags: ["Profile"],
+    }),
+    updateLegacyToken: build.mutation<
+      unknown,
+      { fingerprint: string; form_data: any }
+    >({
+      query: ({ fingerprint, form_data }) => ({
+        url: `api/internal/legacy-tokens/${fingerprint}`,
+        method: "PUT",
+        body: form_data,
+      }),
+      invalidatesTags: ["Profile"],
+    }),
+    deleteLegacyToken: build.mutation<unknown, string>({
+      query: (fingerprint) => ({
+        url: `api/internal/legacy-tokens/${fingerprint}`,
+        method: "DELETE",
+      }),
+      invalidatesTags: ["Profile"],
+    }),
+    rotateToken: build.mutation<
+      { token_id: string; series_id: string; generation: number },
+      { tokenID: string; overlap_seconds?: number; expires_at?: string }
+    >({
+      query: ({ tokenID, ...body }) => ({
+        url: `api/internal/tokens/${tokenID}/rotate`,
+        method: "POST",
+        body,
+      }),
+      invalidatesTags: ["Profile"],
+    }),
+    revokeToken: build.mutation<unknown, string>({
+      query: (tokenID) => ({
+        url: `api/internal/tokens/${tokenID}/revoke`,
+        method: "POST",
+      }),
+      invalidatesTags: ["Profile"],
+    }),
+    revokeTokenSeries: build.mutation<unknown, string>({
+      query: (seriesID) => ({
+        url: `api/internal/token-series/${seriesID}/revoke`,
+        method: "POST",
+      }),
+      invalidatesTags: ["Profile"],
+    }),
+    rotateTokenSeries: build.mutation<
+      { token_id: string; series_id: string; generation: number },
+      { seriesID: string; overlap_seconds?: number; expires_at?: string }
+    >({
+      query: ({ seriesID, ...body }) => ({
+        url: `api/internal/token-series/${seriesID}/rotate`,
+        method: "POST",
+        body,
+      }),
+      invalidatesTags: ["Profile"],
+    }),
   }),
 });
 
@@ -140,6 +235,14 @@ export const {
   useCreateTokenMutation,
   useUpdateTokenMutation,
   useDeleteTokenMutation,
+  useRevokeGenerationMutation,
+  useDeleteGenerationMutation,
+  useUpdateLegacyTokenMutation,
+  useDeleteLegacyTokenMutation,
+  useRotateTokenMutation,
+  useRevokeTokenMutation,
+  useRevokeTokenSeriesMutation,
+  useRotateTokenSeriesMutation,
 } = profileApi;
 
 // True when the current request is served as the read-only anonymous account.

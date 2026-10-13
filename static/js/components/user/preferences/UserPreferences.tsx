@@ -130,7 +130,13 @@ const UserPreferences = () => {
         {
           title: "New token",
           text: "To use the API from scripts.",
-          content: <NewTokenForm availableAcls={profile?.permissions} />,
+          content: (
+            <NewTokenForm
+              availableAcls={profile?.permissions}
+              availableGroups={profile?.groups}
+              availableStreams={profile?.streams}
+            />
+          ),
         },
         { content: <TokenList tokens={(profile as any)?.tokens} /> },
       ],

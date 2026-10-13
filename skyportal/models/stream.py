@@ -14,6 +14,7 @@ from sqlalchemy.orm import relationship
 from baselayer.app.models import (
     Base,
     CustomUserAccessControl,
+    Token,
     User,
     UserAccessControl,
     join_model,
@@ -32,14 +33,19 @@ def stream_read_access_logic(cls, user_or_token):
     be discovered and self-joined) by everyone if it is an auto-join stream."""
     if user_or_token.is_admin:
         return sa.select(cls)
-    user_id = UserAccessControl.user_id_from_user_or_token(user_or_token)
-    return sa.select(cls).where(
-        sa.or_(
-            cls.auto_join.is_(True),
-            cls.id.in_(
-                sa.select(StreamUser.stream_id).where(StreamUser.user_id == user_id)
-            ),
+    if isinstance(user_or_token, Token) and user_or_token.is_scoped:
+        from .user_token import StreamToken
+
+        membership = sa.select(StreamToken.stream_id).where(
+            StreamToken.token_id == user_or_token.id
         )
+    else:
+        user_id = UserAccessControl.user_id_from_user_or_token(user_or_token)
+        membership = sa.select(StreamUser.stream_id).where(
+            StreamUser.user_id == user_id
+        )
+    return sa.select(cls).where(
+        sa.or_(cls.auto_join.is_(True), cls.id.in_(membership))
     )
 
 
@@ -120,6 +126,8 @@ def stream_delete_logic(cls, user_or_token):
     """
     from .group_joins import GroupStream
 
+    if isinstance(user_or_token, Token) and user_or_token.is_scoped:
+        return sa.select(cls).where(sa.literal(False))
     return (
         sa.select(cls)
         .where(sa.literal(user_or_token.is_admin))

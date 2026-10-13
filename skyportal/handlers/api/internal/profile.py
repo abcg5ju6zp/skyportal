@@ -21,6 +21,7 @@ from ....models import (
     Token,
     User,
 )
+from ....models.token_scopes import generation_metadata
 from ....utils.assistant import SERVICE_TOKEN_PREFIX
 from ...base import BaseHandler
 
@@ -94,8 +95,11 @@ class ProfileHandler(BaseHandler):
                     selectinload(User.acls),
                     selectinload(User.roles),
                     selectinload(User.tokens).selectinload(Token.acls),
+                    selectinload(User.tokens).selectinload(Token.scoped_groups),
+                    selectinload(User.tokens).selectinload(Token.scoped_streams),
                     selectinload(User.group_admission_requests),
                     selectinload(User.streams),
+                    selectinload(User.groups),
                 )
                 .where(User.username == self.associated_user_object.username)
             )
@@ -103,12 +107,7 @@ class ProfileHandler(BaseHandler):
             user_acls = sorted(acl.id for acl in user.acls)
             user_permissions = sorted(user.permissions)
             user_tokens = [
-                {
-                    "id": token.id,
-                    "name": token.name,
-                    "acls": sorted(acl.id for acl in token.acls),
-                    "created_at": token.created_at,
-                }
+                generation_metadata(token, owner=user)
                 for token in user.tokens
                 if not token.name.startswith(SERVICE_TOKEN_PREFIX)
             ]
@@ -121,6 +120,9 @@ class ProfileHandler(BaseHandler):
             user_info["preferences"] = user.preferences or {}
             user_info["groupAdmissionRequests"] = user.group_admission_requests
             user_info["streams"] = user.streams
+            user_info["groups"] = [
+                {"id": group.id, "name": group.name} for group in user.groups
+            ]
             # flag the read-only anonymous account so the frontend can hide account UI
             user_info["is_anonymous"] = bool(
                 self.cfg["app.anonymous_access"]

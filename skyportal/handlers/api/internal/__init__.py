@@ -25,4 +25,12 @@ from .source_counts import SourceCountHandler
 from .source_savers import SourceSaverHandler
 from .source_views import SourceViewsHandler
 from .standards import StandardsHandler
-from .token import TokenHandler
+from .token import (
+    LegacyTokenByFingerprintHandler,
+    TokenGenerationHandler,
+    TokenHandler,
+    TokenRevokeHandler,
+    TokenRotateHandler,
+    TokenSeriesRevokeHandler,
+    TokenSeriesRotateHandler,
+)

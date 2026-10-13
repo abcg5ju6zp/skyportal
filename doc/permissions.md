@@ -245,3 +245,34 @@ A session opened with `DBSession()` skips that check, so use it only where the h
 - [Pattern for checking permissions on all the records in a session and
   erroring if any violations are detected](https://github.com/skyportal/skyportal/blob/c7ab07bd04d26e9f66938a05b4c70172a9364c82/skyportal/handlers/api/allocation.py#L71)
 - [Pattern for constructing a query for all records accessible to a user, then filtering that query](https://github.com/skyportal/skyportal/pull/1801/files#diff-0200612f282483e1172207de90a4db4788b3ca5ce55ab5105938d876e11eb2e0R1562)
+
+## Scoped API token generations
+
+Scoped tokens are created with an explicit, immutable snapshot of ACLs,
+groups and streams plus an expiry. They belong to a named **series**;
+rotating a series issues a new **generation** with a fresh secret while
+older generations keep serving requests only during a configurable overlap
+window (0–3600 seconds, default 60).
+
+Authorization is evaluated per request at the HTTP boundary
+(`baselayer/app/access.py`): a generation can establish new requests only
+while its status is `active` or `overlapping`. It is rejected with HTTP 401
+once it is `revoked`, `expired`, `superseded` (overlap ended), or the owner
+is deactivated (`owner_disabled`), and with HTTP 403 when any snapshot
+source is no longer held by the owner (`source_removed`). Legacy tokens
+keep the historical HTTP 403 response for an inactive owner. The permission
+check reads the durable database state on every request, so concurrent
+rotation and revocation always converge; established connections are never
+forcibly closed.
+
+Membership policies (`AccessibleIfUserMatches` and the custom group/stream
+policies) constrain scoped tokens to their snapshot: when a membership chain
+passes through a group or stream, the condition is narrowed to the
+generation's own `group_tokens`/`stream_tokens` rows. Scoped tokens never
+carry group-admin authority. Tokens without a series are **legacy** tokens
+and keep their original behavior of dynamically inheriting the owner's
+groups and streams.
+
+The full token secret is returned exactly once (on creation and rotation);
+list/profile views expose only a short fingerprint, the scope, series
+relationship, expiry and derived status.

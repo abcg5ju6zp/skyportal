@@ -20,14 +20,16 @@ def test_add_and_delete_tokens(super_admin_token, user):
 
     status, data = api("GET", "internal/tokens", token=super_admin_token)
     assert status == 200
-    assert any(token["id"] == token_id for token in data["data"])
+    # list responses never expose the full secret, only a short fingerprint
+    assert all("id" not in token for token in data["data"])
+    assert any(token["fingerprint"] == token_id[:8] for token in data["data"])
 
     status, data = api("DELETE", f"internal/tokens/{token_id}", token=super_admin_token)
     assert status == 200
 
     status, data = api("GET", "internal/tokens", token=super_admin_token)
     assert status == 200
-    assert all(token["id"] != token_id for token in data["data"])
+    assert all(token["fingerprint"] != token_id[:8] for token in data["data"])
 
 
 def test_multiple_tokens(super_admin_token, user, annotation_token):
@@ -104,4 +106,7 @@ def test_service_tokens_are_hidden_from_the_profile(user):
 
     status, data = api("GET", "internal/profile", token=own)
     assert status == 200
-    assert [token["id"] for token in data["data"]["tokens"]] == [own]
+    assert [token["fingerprint"] for token in data["data"]["tokens"]] == [
+        own[:8]
+    ]
+    assert all("id" not in token for token in data["data"]["tokens"])

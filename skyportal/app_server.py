@@ -285,7 +285,13 @@ from skyportal.handlers.api.internal import (
     SourceSaverHandler,
     SourceViewsHandler,
     StandardsHandler,
+    LegacyTokenByFingerprintHandler,
+    TokenGenerationHandler,
     TokenHandler,
+    TokenRevokeHandler,
+    TokenRotateHandler,
+    TokenSeriesRevokeHandler,
+    TokenSeriesRotateHandler,
 )
 from skyportal.handlers.mcp import MCPHandler
 from skyportal.handlers.public import (
@@ -753,6 +759,24 @@ skyportal_handlers = [
     (r"/api/public_pages/release(/[0-9]+)?", PublicReleaseHandler),
     # Internal API endpoints
     (r"/api/internal/tokens(/[0-9A-Za-z-]+)?", TokenHandler),
+    (r"/api/internal/tokens(/[0-9A-Za-z-]+)/rotate", TokenRotateHandler),
+    (r"/api/internal/tokens(/[0-9A-Za-z-]+)/revoke", TokenRevokeHandler),
+    (
+        r"/api/internal/token-series(/[0-9A-Za-z-]+)/revoke",
+        TokenSeriesRevokeHandler,
+    ),
+    (
+        r"/api/internal/token-series(/[0-9A-Za-z-]+)/rotate",
+        TokenSeriesRotateHandler,
+    ),
+    (
+        r"/api/internal/token-series(/[0-9A-Za-z-]+)/generations(/[0-9]+)",
+        TokenGenerationHandler,
+    ),
+    (
+        r"/api/internal/legacy-tokens(/[0-9a-f]+)",
+        LegacyTokenByFingerprintHandler,
+    ),
     (r"/api/internal/profile(/[0-9]+)?", ProfileHandler),
     (r"/api/internal/dbinfo", DBInfoHandler),
     (r"/api/internal/source_views(/.*)?", SourceViewsHandler),

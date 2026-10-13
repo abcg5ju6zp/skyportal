@@ -13,7 +13,10 @@ import { showNotification } from "baselayer/components/Notifications";
 import Button from "../Button";
 
 import { useAppDispatch } from "../../types/hooks";
-import { useUpdateTokenMutation } from "../../ducks/profile";
+import {
+  useGetProfileQuery,
+  useUpdateLegacyTokenMutation,
+} from "../../ducks/profile";
 
 const useStyles = makeStyles()(() => ({
   saveButton: {
@@ -27,19 +30,19 @@ const useStyles = makeStyles()(() => ({
 }));
 
 interface UpdateTokenACLsProps {
-  tokenId: string;
-  availableACLs: string[];
+  fingerprint: string;
   currentACLs: string[];
 }
 
 const UpdateTokenACLs = ({
-  tokenId,
+  fingerprint,
   currentACLs,
-  availableACLs,
 }: UpdateTokenACLsProps) => {
   const { classes } = useStyles();
   const dispatch = useAppDispatch();
-  const [updateToken] = useUpdateTokenMutation();
+  const { data: profile } = useGetProfileQuery();
+  const availableACLs = profile?.permissions;
+  const [updateLegacyToken] = useUpdateLegacyTokenMutation();
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -54,7 +57,10 @@ const UpdateTokenACLs = ({
 
     setIsSubmitting(true);
     try {
-      await updateToken({ tokenID: tokenId, form_data: data }).unwrap();
+      await updateLegacyToken({
+        fingerprint,
+        form_data: data,
+      }).unwrap();
       dispatch(showNotification("ACLs successfully updated."));
       setDialogOpen(false);
     } catch {

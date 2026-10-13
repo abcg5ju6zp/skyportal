@@ -13,6 +13,7 @@ from baselayer.app.models import (
     UserAccessControl,
     join_model,
     public,
+    restricted,
 )
 
 from .catalog import CatalogQuery
@@ -75,6 +76,8 @@ def user_or_token_accessible_streams(self):
     if "System admin" in self.permissions:
         return Stream.query.all()
     if isinstance(self, Token):
+        if self.is_scoped:
+            return self.scoped_streams
         return self.created_by.streams
     return self.streams
 
@@ -499,15 +502,107 @@ UserInvitation = join_model("user_invitations", User, Invitation, overlaps="invi
 
 
 @property
+def token_is_scoped(self):
+    """Whether the token carries its own snapshot (belongs to a series).
+
+    Legacy tokens have no series and dynamically inherit the owner's groups
+    and streams.
+    """
+    return self.series_id is not None
+
+
+@property
 def token_groups(self):
-    """The groups the Token owner is a member of."""
+    """The scoped snapshot groups, or the owner's groups for legacy tokens."""
+    if self.is_scoped:
+        return self.scoped_groups
     return self.created_by.groups
 
 
+Token.is_scoped = token_is_scoped
 Token.groups = token_groups
 Token.accessible_groups = user_or_token_accessible_groups
 Token.accessible_streams = user_or_token_accessible_streams
 Token.is_system_admin = isadmin
+
+
+def token_validate_generation(self):
+    """Auth-boundary hook: reject new requests once a scoped generation is
+    expired, revoked, past its rotation overlap, or backed by a permission
+    source the owner no longer holds. Legacy tokens always pass."""
+    if not self.is_scoped:
+        return
+    import tornado.web
+
+    from baselayer.log import make_log
+
+    from .token_scopes import (
+        SOURCE_REMOVED,
+        USABLE_STATUSES,
+        token_generation_status,
+    )
+
+    status = token_generation_status(self)
+    if status in USABLE_STATUSES:
+        return
+    make_log("access")(f"Token generation rejected for [{self.id}]: {status}")
+    if status == SOURCE_REMOVED:
+        raise tornado.web.HTTPError(
+            403, "Token permission source has been removed."
+        )
+    raise tornado.web.HTTPError(401, f"Token is {status}.")
+
+
+Token.validate_generation = token_validate_generation
+
+
+def token_membership_scope_condition(self, table):
+    """SQL condition restricting a membership chain to the generation's own
+    group/stream snapshot. Returns None for legacy tokens or unrelated tables.
+    """
+    if not self.is_scoped:
+        return None
+    if table.name == "groups":
+        assoc = GroupToken.__table__
+        return table.c.id.in_(
+            sa.select(assoc.c.group_id).where(assoc.c.token_id == self.id)
+        )
+    if table.name == "streams":
+        assoc = StreamToken.__table__
+        return table.c.id.in_(
+            sa.select(assoc.c.stream_id).where(assoc.c.token_id == self.id)
+        )
+    return None
+
+
+Token.membership_scope_condition = token_membership_scope_condition
+
+Token.scoped_groups = relationship(
+    "Group",
+    secondary="group_tokens",
+    lazy="selectin",
+    viewonly=True,
+    doc="The immutable group snapshot of a scoped token generation.",
+)
+Token.scoped_streams = relationship(
+    "Stream",
+    secondary="stream_tokens",
+    lazy="selectin",
+    viewonly=True,
+    doc="The immutable stream snapshot of a scoped token generation.",
+)
+
+GroupToken = join_model("group_tokens", Token, Group, composite_pk=True)
+GroupToken.__doc__ = "Join table mapping scoped token generations to Groups."
+GroupToken.create = GroupToken.read = GroupToken.update = GroupToken.delete = (
+    restricted
+)
+
+StreamToken = join_model("stream_tokens", Token, Stream, composite_pk=True)
+StreamToken.__doc__ = "Join table mapping scoped token generations to Streams."
+StreamToken.create = StreamToken.read = StreamToken.update = StreamToken.delete = (
+    restricted
+)
 
 
 @property

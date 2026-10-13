@@ -23,7 +23,9 @@ cfg = load_config()
 # session-scoped and logged in once.
 # ---------------------------------------------------------------------------
 
-PLAYWRIGHT_BASE_URL = f"http://localhost:{cfg['ports.app']}"
+PLAYWRIGHT_BASE_URL = os.getenv(
+    "PLAYWRIGHT_BASE_URL", f"http://localhost:{cfg['ports.app']}"
+)
 TESTUSER_XPATH = '//*[contains(string(),"testuser-cesium-ml-org")]'
 # Generous default: Playwright only waits the full timeout on failure (it
 # resolves as soon as the condition is met), and several pages (maps, GCN
@@ -44,6 +46,15 @@ def _frontend_test_headless():
         "yes",
         "y",
     )
+
+
+def _frontend_test_browser(playwright):
+    # Firefox stays the default; allow chromium/webkit on hosts where the pinned
+    # Firefox build cannot launch (e.g. newer macOS than it supports).
+    name = os.getenv("PLAYWRIGHT_BROWSER", "firefox").strip().lower()
+    if name not in ("firefox", "chromium", "webkit"):
+        name = "firefox"
+    return getattr(playwright, name)
 
 
 def playwright_login(page):
@@ -75,13 +86,14 @@ def page():
         pass
 
     with sync_playwright() as p:
-        browser = p.firefox.launch(
-            headless=_frontend_test_headless(),
-            firefox_user_prefs={
+        browser_type = _frontend_test_browser(p)
+        launch_kwargs = {"headless": _frontend_test_headless()}
+        if browser_type.name == "firefox":
+            launch_kwargs["firefox_user_prefs"] = {
                 "ui.primaryPointerCapabilities": 6,
                 "ui.allPointerCapabilities": 6,
-            },
-        )
+            }
+        browser = browser_type.launch(**launch_kwargs)
         context = browser.new_context(
             base_url=PLAYWRIGHT_BASE_URL,
             viewport={"width": 1920, "height": 1200},

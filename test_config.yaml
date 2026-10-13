@@ -2,11 +2,19 @@ database:
   database: skyportal_test
   user: skyportal
   host: localhost
-  port: 5432
-  password:
+  port: 55433
+  password: anything
 
 ports:
-  app: 5000 # internal facing port, edit this if you want to run the app on a different port
+  app: 5100 # internal facing port, edit this if you want to run the app on a different port
+  app_internal: 5100 # run the worker directly on the test port (no nginx in local stack)
+  app_http_proxy: 5101
+  websocket: 64100
+  fake_oauth: 63100
+  message_bus_receive: 64102
+  message_bus_publish: 64103
+  status: 64600
+  migration_manager: 64601
 
 server:
   port: 5000 # external facing port, edit this if you want to expose the app on a different port
@@ -113,6 +121,7 @@ test_server:
     /too: https://gnodb.gemini.edu:8443 # Gemini
 
 app:
+  secret_key: test-secret-key-2f8c1a9e7b4d4026
   atlas:
     protocol: http
     host: localhost

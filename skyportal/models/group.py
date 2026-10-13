@@ -13,6 +13,7 @@ from baselayer.app.models import (
     AccessibleIfUserMatches,
     Base,
     CustomUserAccessControl,
+    Token,
     User,
     UserAccessControl,
     join_model,
@@ -24,6 +25,9 @@ _, cfg = load_env()
 
 # group admins can set the admin status of other group members
 def groupuser_update_access_logic(cls, user_or_token):
+    # Token snapshots carry membership but never group-admin rights.
+    if isinstance(user_or_token, Token) and user_or_token.is_scoped:
+        return sa.select(cls).where(sa.literal(False))
     aliased = safe_aliased(cls)
     user_id = UserAccessControl.user_id_from_user_or_token(user_or_token)
     query = sa.select(cls).join(aliased, cls.group_id == aliased.group_id)
@@ -140,6 +144,11 @@ class AccessibleIfGroupUserIsAdminAndUserMatches(AccessibleIfUserMatches):
         relationship chain (parent class's behavior) and silently let
         non-admin group members through.
         """
+        # Scoped tokens carry no group-admin authority.
+        if isinstance(user_or_token, Token) and user_or_token.is_scoped:
+            if columns is not None:
+                return sa.select(*columns).select_from(cls).where(sa.literal(False))
+            return sa.select(cls).where(sa.literal(False))
         # AccessibleIfUserMatches builds the columns select as
         # select(*columns).select_from(cls) (Group/User stay in the FROM scope
         # for the admin join below), so pass columns straight through. The
@@ -178,6 +187,8 @@ accessible_by_group_members = AccessibleIfGroupUserMatches("group.users")
 def delete_group_access_logic(cls, user_or_token):
     """User can delete a group that is not the sitewide public group, is not
     a single user group, and that they are an admin member of."""
+    if isinstance(user_or_token, Token) and user_or_token.is_scoped:
+        return sa.select(cls).where(sa.literal(False))
     user_id = UserAccessControl.user_id_from_user_or_token(user_or_token)
     query = (
         sa.select(cls)
