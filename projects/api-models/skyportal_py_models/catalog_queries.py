@@ -37,6 +37,22 @@ class CatalogQueryPostBody(BaseModel):
         default=None,
         description="IDs of groups to share the results of the query with.",
     )
+    ra: float | None = Field(
+        default=None, description="Cone-search right ascension in degrees."
+    )
+    dec: float | None = Field(
+        default=None, description="Cone-search declination in degrees."
+    )
+    radius: float | None = Field(
+        default=None, description="Cone-search radius in degrees."
+    )
+    publish_results: bool | None = Field(
+        default=None,
+        description=(
+            "Publish validated candidates as visible sources and photometry. "
+            "False keeps results in the query-private staging area."
+        ),
+    )
 
 
 class SwiftLSXPSQueryPostBody(BaseModel):

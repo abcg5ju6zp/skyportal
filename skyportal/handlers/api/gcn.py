@@ -89,6 +89,7 @@ from ...enum_types import GCN_EVENT_OBJ_STATUSES
 from ...models import (
     Allocation,
     CatalogQuery,
+    CatalogQuerySubjob,
     CommentOnGCN,
     DefaultGcnTag,
     DefaultObservationPlanRequest,
@@ -2251,16 +2252,25 @@ class GcnEventCatalogQueryHandler(BaseHandler):
 
         async with self.AsyncSession() as session:
             result = await session.scalars(
-                CatalogQuery.select(
-                    session.user_or_token,
-                ).where(
+                CatalogQuery.select(session.user_or_token)
+                .where(
                     cast(CatalogQuery.payload["gcnevent_id"].astext, sa.Integer)
                     == gcnevent_id
+                )
+                .options(
+                    selectinload(CatalogQuery.subjobs).selectinload(
+                        CatalogQuerySubjob.attempts
+                    ),
+                    selectinload(CatalogQuery.candidates),
                 )
             )
             queries = result.all()
 
-            return self.success(data=queries)
+            from .catalog_services import _serialize_catalog_query
+
+            return self.success(
+                data=[_serialize_catalog_query(query) for query in queries]
+            )
 
 
 class GcnEventSummarizeHandler(BaseHandler):

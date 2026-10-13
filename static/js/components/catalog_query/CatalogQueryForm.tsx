@@ -160,13 +160,18 @@ const CatalogQueryForm = ({ gcnevent }: CatalogQueryFormProps) => {
       localizationCumprob: formData.localizationCumprob,
       catalogName: formData.catalogName,
     };
+    // Read-only mode: candidates stay in the staging area, never published.
+    // Capture before the field is stripped from the submitted body below.
+    const publishResults = !formData.readOnly;
     delete formData.startDate;
     delete formData.endDate;
     delete formData.localizationCumprob;
     delete formData.catalogName;
+    delete formData.readOnly;
 
     formData.payload = payload;
     formData.target_group_ids = selectedGroupIds;
+    formData.publish_results = publishResults;
 
     try {
       await submitCatalogQuery(formData).unwrap();
@@ -232,6 +237,11 @@ const CatalogQueryForm = ({ gcnevent }: CatalogQueryFormProps) => {
         })),
         title: "Allocation",
         default: allocationListApiClassname[0]?.["id"],
+      },
+      readOnly: {
+        type: "boolean",
+        title: "Read-only (stage candidates, do not publish sources)",
+        default: false,
       },
     },
     required: ["startDate", "endDate", "allocation_id", "catalogName"],

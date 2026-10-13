@@ -45,7 +45,10 @@ from .candidate.candidate_filter import CandidateFilterHandler
 from .candidate.scan_report import ScanReportHandler
 from .candidate.scan_report_item import ScanReportItemHandler
 from .catalog_services import (
+    CatalogQueryCancelHandler,
+    CatalogQueryCandidatesHandler,
     CatalogQueryHandler,
+    CatalogQueryIDHandler,
     GaiaPhotometricAlertsQueryHandler,
     SwiftLSXPSQueryHandler,
 )

@@ -16,6 +16,10 @@ import sqlalchemy as sa
 from skyportal import models
 from skyportal.model_util import create_token, delete_token
 from skyportal.models import (
+    CatalogQueryAttempt,
+    CatalogQueryCandidate,
+    CatalogQueryCandidateData,
+    CatalogQuerySubjob,
     Allocation,
     AllocationUser,
     AnalysisService,
@@ -2816,6 +2820,60 @@ def public_catalog_query(public_group, user):
         if row is not None:
             DBSession().delete(row)
             DBSession().commit()
+
+
+@pytest.fixture()
+def public_catalog_query_subjob(public_catalog_query):
+    # Child rows cascade with the parent query; no extra teardown needed.
+    subjob = CatalogQuerySubjob(
+        query_id=public_catalog_query.id,
+        catalog_name="Gaia",
+        status="pending",
+        request_key=uuid.uuid4().hex,
+    )
+    DBSession.add(subjob)
+    DBSession.commit()
+    return subjob
+
+
+@pytest.fixture()
+def public_catalog_query_attempt(public_catalog_query_subjob):
+    attempt = CatalogQueryAttempt(
+        subjob_id=public_catalog_query_subjob.id,
+        attempt_no=1,
+        state="in_flight",
+    )
+    DBSession.add(attempt)
+    DBSession.commit()
+    return attempt
+
+
+@pytest.fixture()
+def public_catalog_query_candidate(public_catalog_query, public_catalog_query_subjob):
+    candidate = CatalogQueryCandidate(
+        query_id=public_catalog_query.id,
+        subjob_id=public_catalog_query_subjob.id,
+        catalog_name="Gaia",
+        external_id=uuid.uuid4().hex,
+        raw_data={},
+        validation_status="pending",
+    )
+    DBSession.add(candidate)
+    DBSession.commit()
+    return candidate
+
+
+@pytest.fixture()
+def public_catalog_query_candidate_data(public_catalog_query_candidate):
+    data = CatalogQueryCandidateData(
+        candidate_id=public_catalog_query_candidate.id,
+        kind="photometry",
+        payload={"mjd": [1.0], "filter": ["ztfr"]},
+        validation_status="pending",
+    )
+    DBSession.add(data)
+    DBSession.commit()
+    return data
 
 
 @pytest.fixture()

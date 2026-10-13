@@ -5,6 +5,12 @@ import Menu from "@mui/material/Menu";
 import MenuItem from "@mui/material/MenuItem";
 import Button from "../Button";
 import StyledDataGrid from "../StyledDataGrid";
+import { useCancelCatalogQueryMutation } from "../../ducks/catalog_query";
+
+const TERMINAL_PREFIXES = ["completed", "failed", "cancelled"];
+
+const isTerminal = (query: any) =>
+  TERMINAL_PREFIXES.some((prefix) => query?.status?.startsWith(prefix));
 
 const useStyles = makeStyles()(() => ({
   container: {
@@ -80,6 +86,7 @@ interface CatalogQueryListsProps {
 
 const CatalogQueryLists = ({ catalog_queries }: CatalogQueryListsProps) => {
   const { classes } = useStyles();
+  const [cancelCatalogQuery] = useCancelCatalogQueryMutation();
 
   if (!catalog_queries || catalog_queries.length === 0) {
     return <p>No catalog queries for this event.</p>;
@@ -87,6 +94,29 @@ const CatalogQueryLists = ({ catalog_queries }: CatalogQueryListsProps) => {
 
   const renderStatus = (params: any) => {
     const query = params.row;
+    const subjobs: any[] = query?.subjobs ?? [];
+    if (subjobs.length > 0) {
+      const published: string[] = query?.published_obj_ids ?? [];
+      return (
+        <div>
+          <div>{query?.status}</div>
+          {published.length > 0 && (
+            <div style={{ marginTop: 2 }}>
+              <SourcesList sources={published} />
+            </div>
+          )}
+          <div style={{ fontSize: "0.8rem", opacity: 0.8 }}>
+            {subjobs.map((subjob: any) => (
+              <div key={subjob.id}>
+                {subjob.catalog_name}: {subjob.status}
+                {subjob.error ? ` — ${subjob.error}` : ""}
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+    // Legacy rows predate the sub-request structure: keep the old rendering.
     let text = <div>{query?.status}</div>;
     if (query?.status?.includes("completed: Added ")) {
       let transients = query?.status?.split("completed: Added ")[1];
@@ -100,12 +130,27 @@ const CatalogQueryLists = ({ catalog_queries }: CatalogQueryListsProps) => {
     <div>{JSON.stringify(params.row.payload)}</div>
   );
 
+  const renderActions = (params: any) => {
+    const query = params.row;
+    if (isTerminal(query) || query?.cancel_requested) {
+      return null;
+    }
+    return (
+      <Button
+        size="small"
+        onClick={() => cancelCatalogQuery(query.id)}
+      >
+        Cancel
+      </Button>
+    );
+  };
+
   const columns: any[] = [
     {
       field: "status",
       headerName: "Status",
       flex: 1,
-      minWidth: 160,
+      minWidth: 220,
       sortable: false,
       renderCell: renderStatus,
     },
@@ -116,6 +161,13 @@ const CatalogQueryLists = ({ catalog_queries }: CatalogQueryListsProps) => {
       minWidth: 200,
       sortable: false,
       renderCell: renderPayload,
+    },
+    {
+      field: "actions",
+      headerName: "Actions",
+      width: 110,
+      sortable: false,
+      renderCell: renderActions,
     },
   ];
 

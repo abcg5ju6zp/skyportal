@@ -10,6 +10,7 @@ from .assistant import *
 from .broker import *
 from .broker_credential import *
 from .candidate import *
+from .catalog import *
 from .classification import *
 from .comment import *
 from .cosmo import cosmo
