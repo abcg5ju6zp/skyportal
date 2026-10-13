@@ -261,6 +261,18 @@ class FollowupRequest(Base):
         doc="The status of the request.",
     )
 
+    version = sa.Column(
+        sa.Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+        doc=(
+            "Monotonically increasing version of the request. Each "
+            "submit/update/delete command fixes a version; responses may "
+            "only be applied while the request is still at that version."
+        ),
+    )
+
     allocation_id = sa.Column(
         sa.ForeignKey("allocations.id", ondelete="CASCADE"), nullable=False, index=True
     )

@@ -75,15 +75,38 @@ class SEDMListener(Listener):
 
         Parameters
         ----------
-        message: skyportal.handlers.FacilityMessageHandler
+        handler_instance: skyportal.handlers.FacilityMessageHandler
            The instance of the handler that received the request.
         session: sqlalchemy.Session
             Database session for this transaction
+
+        Returns
+        -------
+        applied : bool
+            Whether the message still matched the current request version
+            and drove the status transition. A late message for a
+            superseded version is recorded as a stale transaction but
+            never overwrites the newer state.
         """
 
         from ..models import FacilityTransaction, FollowupRequest
+        from ..models.facility_transaction import (
+            COMMAND_MESSAGE,
+            TRANSACTION_APPLIED,
+            TRANSACTION_STALE,
+        )
 
         data = handler_instance.get_json()
+
+        # Take the row lock with a plain core select (the ACL-filtered
+        # ORM select below cannot carry FOR UPDATE through its joins).
+        current = (
+            await session.execute(
+                sa.select(FollowupRequest.version, FollowupRequest.status)
+                .where(FollowupRequest.id == int(data["followup_request_id"]))
+                .with_for_update()
+            )
+        ).first()
 
         request = await session.scalar(
             FollowupRequest.select(session.user_or_token, mode="update").where(
@@ -91,15 +114,31 @@ class SEDMListener(Listener):
             )
         )
 
-        request.status = data["new_status"]
+        # Facility status messages carry no version, so the one
+        # supersession they must never undo is an accepted cancellation.
+        # The mutation stays on the ORM object so the session's update
+        # access check applies (listener tokens have update, not read).
+        version = current.version
+        superseded = str(current.status).lower() == "deleted"
+        new_status = data["new_status"]
+        applied = not superseded
+        drove_transition = applied and current.status != new_status
+        if applied:
+            request.status = new_status
 
         transaction_record = FacilityTransaction(
             request=http.serialize_tornado_request(handler_instance),
             followup_request=request,
+            followup_request_version=version,
+            allocation_id=request.allocation_id,
+            obj_id=request.obj_id,
+            action=COMMAND_MESSAGE,
+            disposition=TRANSACTION_APPLIED if applied else TRANSACTION_STALE,
             initiator_id=handler_instance.associated_user_object.id,
         )
 
         session.add(transaction_record)
+        return drove_transition
 
 
 async def convert_request_to_sedm(request, session, method_value="new"):

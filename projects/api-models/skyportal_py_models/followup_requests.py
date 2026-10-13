@@ -42,6 +42,7 @@ class FollowupRequestResponse(BaseModel):
     last_modified_by_id: int | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     status: str | None = None
+    version: int = 1
     comment: str | None = None
     # typed as dict to avoid an import cycle with sources
     obj: dict[str, Any] | None = None

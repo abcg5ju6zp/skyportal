@@ -11,6 +11,7 @@ import traceback
 import uuid
 from datetime import timedelta
 
+import aiohttp
 import arrow
 import conesearch_alchemy as ca
 import healpy as hp
@@ -74,6 +75,7 @@ from ...models import (
     Comment,
     DBSession,
     DefaultFollowupRequest,
+    FacilityTransaction,
     FollowupRequest,
     FollowupRequestUser,
     Group,
@@ -85,6 +87,14 @@ from ...models import (
     Spectrum,
     User,
     cosmo,
+)
+from ...models.facility_transaction import (
+    COMMAND_DELETE,
+    COMMAND_SUBMIT,
+    COMMAND_UPDATE,
+    TRANSACTION_APPLIED,
+    TRANSACTION_INDETERMINATE,
+    stable_command_id,
 )
 from ...models.schema import AssignmentSchema, FollowupRequestPost
 from ...utils.naive_datetime import utcnow_naive
@@ -505,6 +515,189 @@ def compare_dicts(a, b, ignore_keys=()):
     return True
 
 
+# Non-terminal status kept when a command's remote outcome is unknown: the
+# observation may have been created at the facility, so this must not
+# become an error terminal; a later get/retrieve reconciles it.
+UNCERTAIN_SUBMISSION_STATUS = "submission uncertain, awaiting facility confirmation"
+
+# Failures at these layers mean we never learned whether the facility
+# accepted the command, as opposed to a definite rejection.
+_TRANSPORT_EXCEPTIONS = (
+    aiohttp.ClientError,
+    asyncio.TimeoutError,
+    TimeoutError,
+    ConnectionError,
+)
+
+
+def _is_uncertain_status(status):
+    return "uncertain" in str(status).lower()
+
+
+async def _reconcile_if_uncertain(session, request):
+    """When the previous command outcome is unknown, query the original
+    command at the facility (when supported) before issuing the next one."""
+    try:
+        api = request.instrument.api_class
+    except Exception:  # noqa: BLE001 - missing allocation/instrument is non-fatal
+        return
+    if not api.implements()["get"]:
+        return
+    try:
+        await api.get(request, session)
+        await session.flush()
+    except Exception as e:  # noqa: BLE001 - reconciliation is best-effort
+        log(f"Reconciliation query for request {request.id} failed: {e}")
+
+
+async def _annotate_command_transaction(
+    session,
+    request,
+    action,
+    version,
+    allocation_id,
+    obj_id,
+    command_id,
+    min_transaction_id,
+    *,
+    disposition=TRANSACTION_APPLIED,
+):
+    """Bind the FacilityTransaction written by this command to the fixed
+    version/snapshot and stable command identity."""
+    tx = await session.scalar(
+        sa.select(FacilityTransaction)
+        .where(
+            FacilityTransaction.followup_request_id == request.id,
+            FacilityTransaction.id > min_transaction_id,
+            FacilityTransaction.command_id.is_(None),
+        )
+        .order_by(FacilityTransaction.id.desc())
+        .limit(1)
+    )
+    if tx is None:
+        return
+    tx.followup_request_version = version
+    tx.allocation_id = allocation_id
+    tx.obj_id = obj_id
+    tx.action = action
+    tx.command_id = command_id
+    tx.disposition = disposition
+    await session.flush()
+
+
+async def execute_followup_command(session, request, action, api_call, *, bump_version):
+    """Run a submit/update/delete command under the versioning protocol.
+
+    Takes a row lock for the duration of the HTTP exchange so concurrent
+    commands (API edits/cancels and background auto-priority bumps)
+    serialize, fixes the request version, allocation and target snapshot,
+    and skips re-sending an already-applied command with the same stable
+    identity.
+
+    Returns True when the command was sent, False when an applied command
+    with this identity already existed (idempotent retry).
+    """
+    await session.execute(
+        sa.select(FollowupRequest.id)
+        .where(FollowupRequest.id == request.id)
+        .with_for_update()
+    )
+
+    if _is_uncertain_status(request.status) and action in (
+        COMMAND_UPDATE,
+        COMMAND_DELETE,
+    ):
+        await _reconcile_if_uncertain(session, request)
+        # The reconciliation GET may commit internally, releasing the
+        # row lock; re-acquire before fixing the new command version.
+        await session.execute(
+            sa.select(FollowupRequest.id)
+            .where(FollowupRequest.id == request.id)
+            .with_for_update()
+        )
+
+    if bump_version:
+        request.version = int(request.version or 1) + 1
+        await session.flush()
+
+    version = request.version
+    allocation_id = request.allocation_id
+    obj_id = request.obj_id
+    command_id = stable_command_id(request.id, version, action)
+
+    already_applied = await session.scalar(
+        sa.select(FacilityTransaction.id)
+        .where(
+            FacilityTransaction.followup_request_id == request.id,
+            FacilityTransaction.command_id == command_id,
+            FacilityTransaction.disposition == TRANSACTION_APPLIED,
+        )
+        .limit(1)
+    )
+    if already_applied is not None:
+        log(f"Command {command_id} already applied; skipping duplicate send")
+        return False
+
+    max_transaction_id = await session.scalar(
+        sa.select(func.max(FacilityTransaction.id)).where(
+            FacilityTransaction.followup_request_id == request.id
+        )
+    )
+
+    try:
+        await api_call()
+        # App sessions run with autoflush disabled; flush the
+        # transaction the facility API just recorded so it can be
+        # annotated below.
+        await session.flush()
+    except Exception as e:
+        try:
+            await _annotate_command_transaction(
+                session,
+                request,
+                action,
+                version,
+                allocation_id,
+                obj_id,
+                command_id,
+                max_transaction_id or 0,
+                disposition=TRANSACTION_INDETERMINATE,
+            )
+        except Exception:  # noqa: BLE001 - annotation must not mask the failure
+            pass
+        if isinstance(e, _TRANSPORT_EXCEPTIONS):
+            # The observation may exist at the facility: keep the command
+            # queryable and non-terminal instead of declaring failure.
+            session.add(
+                FacilityTransaction(
+                    request={"note": "command outcome unknown", "error": str(e)},
+                    followup_request=request,
+                    followup_request_version=version,
+                    allocation_id=allocation_id,
+                    obj_id=obj_id,
+                    action=action,
+                    command_id=command_id,
+                    disposition=TRANSACTION_INDETERMINATE,
+                    initiator_id=request.last_modified_by_id,
+                )
+            )
+            request.status = UNCERTAIN_SUBMISSION_STATUS
+            await session.commit()
+        raise
+
+    await _annotate_command_transaction(
+        session,
+        request,
+        action,
+        version,
+        allocation_id,
+        obj_id,
+        command_id,
+        max_transaction_id or 0,
+    )
+    return True
+
+
 async def post_followup_request_async(
     data, constraints, session, refresh_source=True, refresh_requests=False
 ):
@@ -829,16 +1022,31 @@ async def post_followup_request_async(
             )
 
     try:
-        await instrument.api_class.submit(
-            followup_request,
+        # First submission keeps version 1 and its current semantics; the
+        # wrapper serializes any concurrent command on this row.
+        async def _submit():
+            return await instrument.api_class.submit(
+                followup_request,
+                session,
+                refresh_source=refresh_source,
+                refresh_requests=refresh_requests,
+            )
+
+        await execute_followup_command(
             session,
-            refresh_source=refresh_source,
-            refresh_requests=refresh_requests,
+            followup_request,
+            COMMAND_SUBMIT,
+            _submit,
+            bump_version=False,
         )
     except Exception as e:
         log(f"Failed to submit follow-up request: {e}, traceback:")
         log(traceback.format_exc())
-        followup_request.status = f"failed to submit: {e}"
+        # Transport failures leave the request at the non-terminal
+        # "uncertain" status set by the wrapper; everything else is a
+        # definite, local rejection.
+        if not _is_uncertain_status(followup_request.status):
+            followup_request.status = f"failed to submit: {e}"
         raise
     finally:
         await session.commit()
@@ -1049,8 +1257,20 @@ async def _post_default_followup_requests_async(
                                 priority_key: new_priority,
                             }
                             candidate.last_modified_by_id = user_id
-                            await candidate.instrument.api_class.update(
-                                candidate, session
+
+                            async def _bump_existing(
+                                candidate=candidate,
+                            ):
+                                return await candidate.instrument.api_class.update(
+                                    candidate, session
+                                )
+
+                            await execute_followup_command(
+                                session,
+                                candidate,
+                                COMMAND_UPDATE,
+                                _bump_existing,
+                                bump_version=True,
                             )
                             await session.commit()
                             log(
@@ -1616,31 +1836,40 @@ class FollowupRequestHandler(BaseHandler):
                 _api = followup_request.instrument.api_class
 
                 if any(x in existing_status for x in ["failed to submit", "rejected"]):
-                    try:
-                        await _api.submit(
-                            _req,
-                            session,
-                            refresh_source=refresh_source,
-                            refresh_requests=refresh_requests,
-                        )
-                        await session.commit()
-                    except Exception as e:
-                        return self.error(f"Failed to submit follow-up request: {e}")
+                    action = COMMAND_SUBMIT
+                    api_method = _api.submit
+                    error_message = "Failed to submit follow-up request: "
                 elif followup_request.instrument.api_class.implements()["update"]:
-                    try:
-                        await _api.update(
-                            _req,
-                            session,
-                            refresh_source=refresh_source,
-                            refresh_requests=refresh_requests,
-                        )
-                        await session.commit()
-                    except Exception as e:
-                        return self.error(f"Failed to update follow-up request: {e}")
+                    action = COMMAND_UPDATE
+                    api_method = _api.update
+                    error_message = "Failed to update follow-up request: "
                 else:
                     return self.error(
                         "Could not update existing request, not implemented for this instrument."
                     )
+
+                async def _send_request():
+                    return await api_method(
+                        _req,
+                        session,
+                        refresh_source=refresh_source,
+                        refresh_requests=refresh_requests,
+                    )
+
+                try:
+                    # Re-submission and edits each fix a new version under
+                    # the command lock; late responses to the old version
+                    # can no longer overwrite this one.
+                    await execute_followup_command(
+                        session,
+                        _req,
+                        action,
+                        _send_request,
+                        bump_version=True,
+                    )
+                    await session.commit()
+                except Exception as e:  # noqa: BLE001 - surface facility error
+                    return self.error(f"{error_message}{e}")
 
             return self.success()
 
@@ -1695,15 +1924,27 @@ class FollowupRequestHandler(BaseHandler):
             _req = followup_request
             _api = api
 
-            try:
-                await _api.delete(
+            async def _delete_request():
+                return await _api.delete(
                     _req,
                     session,
                     refresh_source=refresh_source,
                     refresh_requests=refresh_requests,
                 )
+
+            try:
+                # Cancellation fixes its own version: an in-flight
+                # update/submit response arriving afterward cannot undo
+                # the deletion.
+                await execute_followup_command(
+                    session,
+                    _req,
+                    COMMAND_DELETE,
+                    _delete_request,
+                    bump_version=True,
+                )
                 await session.commit()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - surface facility error
                 traceback.print_exc()
                 return self.error(f"Failed to delete follow-up request: {e}")
             return self.success()
@@ -2507,20 +2748,26 @@ class FollowupRequestPrioritizationHandler(BaseHandler):
                 api = followup_request.instrument.api_class
                 if not api.implements()["update"]:
                     return self.error("Cannot update requests on this instrument.")
-                payload = followup_request.payload
-                payload["priority"] = priority
-                await session.execute(
-                    sa.update(FollowupRequest)
-                    .where(FollowupRequest.id == followup_request.id)
-                    .values(payload=payload)
-                )
-                await session.commit()
-
-                followup_request.payload = payload
+                followup_request.payload = {
+                    **followup_request.payload,
+                    "priority": priority,
+                }
 
                 _req = followup_request
 
-                await _req.instrument.api_class.update(_req, session)
+                async def _reprioritize(_req=_req, api=api):
+                    return await api.update(_req, session)
+
+                # Each reprioritization is a fixed new version of the
+                # command, serialized against concurrent edits/cancels.
+                await execute_followup_command(
+                    session,
+                    _req,
+                    COMMAND_UPDATE,
+                    _reprioritize,
+                    bump_version=True,
+                )
+                await session.commit()
 
             flow = Flow()
             flow.push(

@@ -23,6 +23,7 @@ from baselayer.app.env import load_env
 from baselayer.app.flow import Flow
 from baselayer.log import make_log
 
+from ..models.facility_transaction import COMMAND_RETRIEVE, stable_command_id
 from ..utils import http
 from ..utils.naive_datetime import utcnow_naive
 from . import MMAAPI, FollowUpAPI
@@ -687,6 +688,13 @@ class ZTFAPI(FollowUpAPI):
                     "endpoint": url,
                     "data": requestgroup,
                     "followup_request_id": request.id,
+                    "followup_request_version": request.version,
+                    "allocation_id": request.allocation_id,
+                    "obj_id": request.obj_id,
+                    "action": COMMAND_RETRIEVE,
+                    "command_id": stable_command_id(
+                        request.id, request.version, COMMAND_RETRIEVE
+                    ),
                     "initiator_id": request.last_modified_by_id,
                 }
                 try:

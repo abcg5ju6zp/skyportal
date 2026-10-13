@@ -55,13 +55,16 @@ class FacilityMessageHandler(BaseHandler):
 
             jsonschema.validate(data, instrument.listener_class.complete_schema())
 
-            await instrument.listener_class.process_message(self, session)
+            applied = await instrument.listener_class.process_message(self, session)
             await session.commit()
 
-            self.push_all(
-                action="skyportal/REFRESH_SOURCE",
-                payload={"obj_key": request.obj.internal_key},
-            )
+            # Only a message that matched the current version drove a
+            # transition, so it is the only one that refreshes the UI.
+            if applied is not False:
+                self.push_all(
+                    action="skyportal/REFRESH_SOURCE",
+                    payload={"obj_key": request.obj.internal_key},
+                )
 
             return self.success()
 
